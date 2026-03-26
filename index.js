@@ -1,10 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const cookieParser = require('cookie-parser');
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
+app.use(express.json());
 
 // --- DATABASE ---
 const mongoURI = "mongodb+srv://hakimalikhatri452_db_user:VAH3uroGDj8mXXeD@cluster0.kavslgh.mongodb.net/kuroDB?retryWrites=true&w=majority";
@@ -13,10 +12,22 @@ mongoose.connect(mongoURI).then(() => console.log("DB Connected!")).catch(err =>
 const User = mongoose.model('User', new mongoose.Schema({ username: String, password: String, role: String, points: { type: Number, default: 0 } }));
 const Key = mongoose.model('Key', new mongoose.Schema({ key: String, duration: String, devices: Number, reseller: String, date: { type: Date, default: Date.now } }));
 
+// --- VERCEL COOKIE BYPASS (Bina kisi package ke) ---
+const getCookies = (req) => {
+    const cookies = {};
+    const rc = req.headers.cookie;
+    rc && rc.split(';').forEach(cookie => {
+        const parts = cookie.split('=');
+        cookies[parts.shift().trim()] = decodeURI(parts.join('='));
+    });
+    return cookies;
+};
+
 // --- ROUTES ---
 app.get('/', (req, res) => {
-    if (req.cookies.admin) return res.redirect('/admin');
-    if (req.cookies.reseller) return res.redirect('/reseller');
+    const cookies = getCookies(req);
+    if (cookies.admin === 'true') return res.redirect('/admin');
+    if (cookies.reseller) return res.redirect('/reseller');
     res.redirect('/login');
 });
 
@@ -34,21 +45,29 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-    const { user, pass } = req.body;
+    // Vercel auto-parser fix
+    const user = req.body && req.body.user ? req.body.user : '';
+    const pass = req.body && req.body.pass ? req.body.pass : '';
+
     if (user === "admin" && pass === "kuro123") {
-        res.cookie('admin', 'true', { maxAge: 86400000 }); // 1 day cookie
+        res.setHeader('Set-Cookie', 'admin=true; Path=/; Max-Age=86400');
         return res.redirect('/admin');
     }
-    const reseller = await User.findOne({ username: user, password: pass });
-    if (reseller) {
-        res.cookie('reseller', reseller.username, { maxAge: 86400000 });
-        return res.redirect('/reseller');
-    }
-    res.send("Invalid! <a href='/login'>Try Again</a>");
+    
+    try {
+        const reseller = await User.findOne({ username: user, password: pass });
+        if (reseller) {
+            res.setHeader('Set-Cookie', \`reseller=\${reseller.username}; Path=/; Max-Age=86400\`);
+            return res.redirect('/reseller');
+        }
+    } catch (e) { console.log(e); }
+    
+    res.send("<body style='background:#000; color:red; text-align:center; padding-top:100px;'><h1>Invalid Details!</h1><br><a href='/login' style='color:#0f0;'>Try Again</a></body>");
 });
 
 app.get('/admin', async (req, res) => {
-    if (!req.cookies.admin) return res.redirect('/login');
+    const cookies = getCookies(req);
+    if (cookies.admin !== 'true') return res.redirect('/login');
     const resellers = await User.find({ role: 'reseller' });
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
@@ -65,8 +84,10 @@ app.get('/admin', async (req, res) => {
 });
 
 app.get('/reseller', async (req, res) => {
-    if (!req.cookies.reseller) return res.redirect('/login');
-    const data = await User.findOne({ username: req.cookies.reseller });
+    const cookies = getCookies(req);
+    if (!cookies.reseller) return res.redirect('/login');
+    const data = await User.findOne({ username: cookies.reseller });
+    if (!data) return res.redirect('/logout');
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
             <h2 style="color:#0f0;">Reseller: ${data.username} | Points: ${data.points}</h2>
@@ -82,26 +103,26 @@ app.get('/reseller', async (req, res) => {
 });
 
 app.post('/add-reseller', async (req, res) => {
-    if (!req.cookies.admin) return res.redirect('/login');
+    const cookies = getCookies(req);
+    if (cookies.admin !== 'true') return res.redirect('/login');
     await new User({ username: req.body.u, password: req.body.p, points: req.body.pts, role: 'reseller' }).save();
     res.redirect('/admin');
 });
 
 app.post('/gen-key', async (req, res) => {
-    if (!req.cookies.reseller) return res.redirect('/login');
-    const user = await User.findOne({ username: req.cookies.reseller });
-    if (user.points < 1) return res.send("No Points!");
+    const cookies = getCookies(req);
+    if (!cookies.reseller) return res.redirect('/login');
+    const user = await User.findOne({ username: cookies.reseller });
+    if (!user || user.points < 1) return res.send("No Points!");
     const k = new Key({ key: "KURO-" + Math.random().toString(36).substring(7).toUpperCase(), duration: req.body.time + " " + req.body.type, devices: req.body.dev, reseller: user.username });
     await k.save();
     await User.updateOne({ username: user.username }, { $inc: { points: -1 } });
-    res.send(`<body style="background:#000; color:#0f0; text-align:center; padding:50px;"><h1>KEY: ${k.key}</h1><a href='/reseller' style="color:white;">Back</a></body>`);
+    res.send(\`<body style="background:#000; color:#0f0; text-align:center; padding:50px;"><h1>KEY: \${k.key}</h1><br><a href='/reseller' style="color:white;">Back</a></body>\`);
 });
 
 app.get('/logout', (req, res) => { 
-    res.clearCookie('admin');
-    res.clearCookie('reseller');
+    res.setHeader('Set-Cookie', ['admin=; Max-Age=0; Path=/', 'reseller=; Max-Age=0; Path=/']);
     res.redirect('/login'); 
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Server live on ${PORT}`));
+module.exports = app;
