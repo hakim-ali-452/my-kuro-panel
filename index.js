@@ -1,12 +1,12 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const session = require('express-session');
+const cookieParser = require('cookie-parser');
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
-app.use(session({ secret: 'kuro_secret', resave: false, saveUninitialized: true }));
+app.use(cookieParser());
 
-// --- DATABASE CONNECTION ---
+// --- DATABASE ---
 const mongoURI = "mongodb+srv://hakimalikhatri452_db_user:VAH3uroGDj8mXXeD@cluster0.kavslgh.mongodb.net/kuroDB?retryWrites=true&w=majority";
 mongoose.connect(mongoURI).then(() => console.log("DB Connected!")).catch(err => console.log(err));
 
@@ -14,7 +14,11 @@ const User = mongoose.model('User', new mongoose.Schema({ username: String, pass
 const Key = mongoose.model('Key', new mongoose.Schema({ key: String, duration: String, devices: Number, reseller: String, date: { type: Date, default: Date.now } }));
 
 // --- ROUTES ---
-app.get('/', (req, res) => res.redirect('/login'));
+app.get('/', (req, res) => {
+    if (req.cookies.admin) return res.redirect('/admin');
+    if (req.cookies.reseller) return res.redirect('/reseller');
+    res.redirect('/login');
+});
 
 app.get('/login', (req, res) => {
     res.send(`
@@ -23,7 +27,7 @@ app.get('/login', (req, res) => {
             <form action="/login" method="POST" style="background:#111; padding:30px; display:inline-block; border-radius:15px; border:1px solid #0f0;">
                 <input name="user" placeholder="Username" style="padding:12px; margin-bottom:10px;" required><br>
                 <input name="pass" type="password" placeholder="Password" style="padding:12px; margin-bottom:10px;" required><br>
-                <button type="submit" style="background:#0f0; color:#000; padding:12px 30px; border:none; font-weight:bold; cursor:pointer;">LOGIN</button>
+                <button type="submit" style="background:#0f0; color:#000; padding:12px 30px; border:none; font-weight:bold; cursor:pointer; border-radius:5px;">LOGIN</button>
             </form>
         </body>
     `);
@@ -32,26 +36,26 @@ app.get('/login', (req, res) => {
 app.post('/login', async (req, res) => {
     const { user, pass } = req.body;
     if (user === "admin" && pass === "kuro123") {
-        req.session.admin = true;
+        res.cookie('admin', 'true', { maxAge: 86400000 }); // 1 day cookie
         return res.redirect('/admin');
     }
     const reseller = await User.findOne({ username: user, password: pass });
     if (reseller) {
-        req.session.reseller = reseller.username;
+        res.cookie('reseller', reseller.username, { maxAge: 86400000 });
         return res.redirect('/reseller');
     }
     res.send("Invalid! <a href='/login'>Try Again</a>");
 });
 
 app.get('/admin', async (req, res) => {
-    if (!req.session.admin) return res.redirect('/login');
+    if (!req.cookies.admin) return res.redirect('/login');
     const resellers = await User.find({ role: 'reseller' });
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
             <h1 style="color:#0f0;">💎 ADMIN DASHBOARD</h1>
             <form action="/add-reseller" method="POST" style="background:#111; padding:20px; border:1px solid #333;">
-                <input name="u" placeholder="User"> <input name="p" placeholder="Pass"> <input name="pts" type="number" placeholder="Points">
-                <button type="submit" style="background:#0f0;">Add Reseller</button>
+                <input name="u" placeholder="User" required> <input name="p" placeholder="Pass" required> <input name="pts" type="number" placeholder="Points" required>
+                <button type="submit" style="background:#0f0; padding:5px 15px; border:none; font-weight:bold; cursor:pointer;">ADD</button>
             </form>
             <br><h3>Resellers:</h3>
             ${resellers.map(r => `<p style="color:#0f0;">${r.username} - Pts: ${r.points}</p>`).join('')}
@@ -61,16 +65,16 @@ app.get('/admin', async (req, res) => {
 });
 
 app.get('/reseller', async (req, res) => {
-    if (!req.session.reseller) return res.redirect('/login');
-    const data = await User.findOne({ username: req.session.reseller });
+    if (!req.cookies.reseller) return res.redirect('/login');
+    const data = await User.findOne({ username: req.cookies.reseller });
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
             <h2 style="color:#0f0;">Reseller: ${data.username} | Points: ${data.points}</h2>
             <form action="/gen-key" method="POST" style="background:#111; padding:30px; display:inline-block; border:1px solid #0f0;">
                 <select name="type" style="padding:10px;"><option>Minutes</option><option>Hours</option><option>Days</option></select>
-                <input name="time" type="number" placeholder="Value" style="padding:10px;">
-                <input name="dev" type="number" placeholder="Devices" style="padding:10px;">
-                <button type="submit" style="background:#0f0; padding:10px;">GENERATE (-1 PT)</button>
+                <input name="time" type="number" placeholder="Value" style="padding:10px;" required>
+                <input name="dev" type="number" placeholder="Devices" style="padding:10px;" required><br><br>
+                <button type="submit" style="background:#0f0; padding:10px; font-weight:bold; cursor:pointer;">GENERATE (-1 PT)</button>
             </form>
             <br><a href="/logout" style="color:red;">Logout</a>
         </body>
@@ -78,21 +82,26 @@ app.get('/reseller', async (req, res) => {
 });
 
 app.post('/add-reseller', async (req, res) => {
-    if (!req.session.admin) return res.redirect('/login');
+    if (!req.cookies.admin) return res.redirect('/login');
     await new User({ username: req.body.u, password: req.body.p, points: req.body.pts, role: 'reseller' }).save();
     res.redirect('/admin');
 });
 
 app.post('/gen-key', async (req, res) => {
-    if (!req.session.reseller) return res.redirect('/login');
-    const user = await User.findOne({ username: req.session.reseller });
+    if (!req.cookies.reseller) return res.redirect('/login');
+    const user = await User.findOne({ username: req.cookies.reseller });
     if (user.points < 1) return res.send("No Points!");
     const k = new Key({ key: "KURO-" + Math.random().toString(36).substring(7).toUpperCase(), duration: req.body.time + " " + req.body.type, devices: req.body.dev, reseller: user.username });
     await k.save();
     await User.updateOne({ username: user.username }, { $inc: { points: -1 } });
-    res.send(`<body style="background:#000; color:#0f0; text-align:center;"><h1>KEY: ${k.key}</h1><a href='/reseller' style="color:white;">Back</a></body>`);
+    res.send(`<body style="background:#000; color:#0f0; text-align:center; padding:50px;"><h1>KEY: ${k.key}</h1><a href='/reseller' style="color:white;">Back</a></body>`);
 });
 
-app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
+app.get('/logout', (req, res) => { 
+    res.clearCookie('admin');
+    res.clearCookie('reseller');
+    res.redirect('/login'); 
+});
 
-app.listen(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Server live on ${PORT}`));
