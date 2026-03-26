@@ -5,26 +5,38 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --- DATABASE ---
+// --- VERCEL SERVERLESS DB CONNECTION (Fix for 500 Error) ---
 const mongoURI = "mongodb+srv://hakimalikhatri452_db_user:VAH3uroGDj8mXXeD@cluster0.kavslgh.mongodb.net/kuroDB?retryWrites=true&w=majority";
-mongoose.connect(mongoURI).then(() => console.log("DB Connected!")).catch(err => console.log(err));
+let isConnected = false;
 
+const connectDB = async () => {
+    if (isConnected) return;
+    try {
+        await mongoose.connect(mongoURI);
+        isConnected = true;
+    } catch (err) {
+        console.log("DB Error:", err);
+    }
+};
+
+// --- MODELS ---
 const User = mongoose.model('User', new mongoose.Schema({ username: String, password: String, role: String, points: { type: Number, default: 0 } }));
 const Key = mongoose.model('Key', new mongoose.Schema({ key: String, duration: String, devices: Number, reseller: String, date: { type: Date, default: Date.now } }));
 
-// --- VERCEL COOKIE BYPASS (Bina kisi package ke) ---
+// --- SAFE COOKIE READER ---
 const getCookies = (req) => {
     const cookies = {};
-    const rc = req.headers.cookie;
-    rc && rc.split(';').forEach(cookie => {
-        const parts = cookie.split('=');
-        cookies[parts.shift().trim()] = decodeURI(parts.join('='));
-    });
+    if (req.headers.cookie) {
+        req.headers.cookie.split(';').forEach(c => {
+            const parts = c.split('=');
+            if (parts.length >= 2) cookies[parts[0].trim()] = parts[1].trim();
+        });
+    }
     return cookies;
 };
 
 // --- ROUTES ---
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
     const cookies = getCookies(req);
     if (cookies.admin === 'true') return res.redirect('/admin');
     if (cookies.reseller) return res.redirect('/reseller');
@@ -45,9 +57,9 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-    // Vercel auto-parser fix
-    const user = req.body && req.body.user ? req.body.user : '';
-    const pass = req.body && req.body.pass ? req.body.pass : '';
+    await connectDB(); // Database yahan connect hoga
+    const user = req.body.user;
+    const pass = req.body.pass;
 
     if (user === "admin" && pass === "kuro123") {
         res.setHeader('Set-Cookie', 'admin=true; Path=/; Max-Age=86400');
@@ -66,8 +78,10 @@ app.post('/login', async (req, res) => {
 });
 
 app.get('/admin', async (req, res) => {
+    await connectDB();
     const cookies = getCookies(req);
     if (cookies.admin !== 'true') return res.redirect('/login');
+    
     const resellers = await User.find({ role: 'reseller' });
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
@@ -84,10 +98,13 @@ app.get('/admin', async (req, res) => {
 });
 
 app.get('/reseller', async (req, res) => {
+    await connectDB();
     const cookies = getCookies(req);
     if (!cookies.reseller) return res.redirect('/login');
+    
     const data = await User.findOne({ username: cookies.reseller });
     if (!data) return res.redirect('/logout');
+    
     res.send(`
         <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center;">
             <h2 style="color:#0f0;">Reseller: ${data.username} | Points: ${data.points}</h2>
@@ -103,6 +120,7 @@ app.get('/reseller', async (req, res) => {
 });
 
 app.post('/add-reseller', async (req, res) => {
+    await connectDB();
     const cookies = getCookies(req);
     if (cookies.admin !== 'true') return res.redirect('/login');
     await new User({ username: req.body.u, password: req.body.p, points: req.body.pts, role: 'reseller' }).save();
@@ -110,10 +128,13 @@ app.post('/add-reseller', async (req, res) => {
 });
 
 app.post('/gen-key', async (req, res) => {
+    await connectDB();
     const cookies = getCookies(req);
     if (!cookies.reseller) return res.redirect('/login');
+    
     const user = await User.findOne({ username: cookies.reseller });
     if (!user || user.points < 1) return res.send("No Points!");
+    
     const k = new Key({ key: "KURO-" + Math.random().toString(36).substring(7).toUpperCase(), duration: req.body.time + " " + req.body.type, devices: req.body.dev, reseller: user.username });
     await k.save();
     await User.updateOne({ username: user.username }, { $inc: { points: -1 } });
